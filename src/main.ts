@@ -40,6 +40,8 @@ async function bootstrap() {
   );
   app.use(compression());
 
+  app.setGlobalPrefix("api/v1");
+
   // Apply validation pipe
   app.useGlobalPipes(
     new ValidationPipe({
