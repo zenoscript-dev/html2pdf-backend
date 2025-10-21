@@ -33,10 +33,10 @@ export class PdfService {
       }
 
       // Basic HTML structure validation
-      if (!html.includes("<html") || !html.includes("</html>")) {
-        this.prometheusService.recordError("html", "Missing HTML tags");
-        throw new BadRequestException("HTML content must include <html> tags");
-      }
+      // if (!html.includes("<html") || !html.includes("</html>")) {
+      //   this.prometheusService.recordError("html", "Missing HTML tags");
+      //   throw new BadRequestException("HTML content must include <html> tags");
+      // }
 
       this.logger.debug("Launching Puppeteer browser...");
       browser = await puppeteer.launch({
