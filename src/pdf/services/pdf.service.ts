@@ -40,7 +40,7 @@ export class PdfService {
 
       this.logger.debug("Launching Puppeteer browser...");
       browser = await puppeteer.launch({
-        headless: "new",
+        headless: true,
         channel: "chrome",
         executablePath: process.env.CHROME_PATH || undefined,
         args: [
@@ -57,7 +57,6 @@ export class PdfService {
           "--hide-scrollbars",
           "--disable-blink-features=AutomationControlled",
         ],
-        ignoreHTTPSErrors: true,
         defaultViewport: {
           width: 1920,
           height: 1080,
@@ -66,6 +65,7 @@ export class PdfService {
 
       this.logger.debug("Browser launched successfully");
       const page = await browser.newPage();
+      await page.setBypassCSP(true);
 
       // Set common browser configurations
       try {
@@ -122,6 +122,21 @@ export class PdfService {
 
       // Generate PDF with retry
       this.logger.debug("Starting PDF generation");
+
+      // Get company name and generate header/footer templates
+      const companyName = this.configService.pdfWatermarkText;
+      const color = this.configService.pdfWatermarkColor;
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
       const pdf = await this.retryOperation(
         async () => {
           try {
@@ -130,11 +145,24 @@ export class PdfService {
               printBackground: true,
               timeout: this.timeouts.pdfGeneration,
               scale: 0.8,
+              displayHeaderFooter: true,
+              headerTemplate: `
+                <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
+                  <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
+                </div>
+              `,
+              footerTemplate: `
+                <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
+                  <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
+                </div>
+              `,
               margin: {
-                top: "20px",
-                right: "20px",
-                bottom: "20px",
-                left: "20px",
+                top: "80px",
+                right: "40px",
+                bottom: "80px",
+                left: "40px",
               },
             });
             this.logger.debug("PDF generation successful");
@@ -153,7 +181,7 @@ export class PdfService {
         500
       );
 
-      return pdf;
+      return Buffer.from(pdf);
     } catch (error: unknown) {
       let errorMessage: string;
       if (error instanceof Error) {
@@ -271,7 +299,7 @@ export class PdfService {
       try {
         this.logger.debug("Launching Puppeteer browser...");
         browser = await puppeteer.launch({
-          headless: "new",
+          headless: true,
           channel: "chrome",
           executablePath: process.env.CHROME_PATH || undefined,
           args: [
@@ -291,7 +319,6 @@ export class PdfService {
             "--disable-web-security",
             "--disable-features=site-per-process",
           ],
-          ignoreHTTPSErrors: true,
           defaultViewport: {
             width: 1920,
             height: 1080,
@@ -300,6 +327,7 @@ export class PdfService {
 
         this.logger.debug("Browser launched successfully");
         const page = await browser.newPage();
+        await page.setBypassCSP(true);
 
         // Set common browser configurations
         try {
@@ -513,6 +541,21 @@ export class PdfService {
 
         // Generate PDF with retry
         this.logger.debug("Starting PDF generation");
+
+        // Get company name and generate header/footer templates
+        const companyName = this.configService.pdfWatermarkText;
+        const color = this.configService.pdfWatermarkColor;
+        const now = new Date();
+        const dateStr = now.toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
+        const timeStr = now.toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
         const pdf = await this.retryOperation(
           async () => {
             try {
@@ -521,11 +564,24 @@ export class PdfService {
                 printBackground: true,
                 timeout: this.timeouts.pdfGeneration,
                 scale: 0.8, // Slightly scale down to ensure content fits
+                displayHeaderFooter: true,
+                headerTemplate: `
+                  <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                    <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
+                    <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
+                  </div>
+                `,
+                footerTemplate: `
+                  <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                    <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
+                    <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
+                  </div>
+                `,
                 margin: {
-                  top: "20px",
-                  right: "20px",
-                  bottom: "20px",
-                  left: "20px",
+                  top: "80px",
+                  right: "40px",
+                  bottom: "80px",
+                  left: "40px",
                 },
               });
               this.logger.debug("PDF generation successful");
@@ -545,7 +601,7 @@ export class PdfService {
           500
         );
 
-        return pdf;
+        return Buffer.from(pdf);
       } catch (error: unknown) {
         let errorMessage: string;
         if (error instanceof Error) {

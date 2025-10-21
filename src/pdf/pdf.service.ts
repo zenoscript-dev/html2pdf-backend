@@ -68,31 +68,55 @@ export class PdfService {
         throw new BadRequestException("Invalid HTML content");
       }
 
-      // Basic HTML structure validation
-      if (!html.includes("<html") || !html.includes("</html>")) {
-        this.prometheusService.recordError("html", "Missing HTML tags");
-        throw new BadRequestException("HTML content must include <html> tags");
+      // Basic HTML structure validation - be more lenient
+      if (!html.includes("<html") && !html.includes("<HTML")) {
+        this.logger.warn("HTML content missing <html> tags, wrapping content");
+        html = `<html><head><title>Generated PDF</title></head><body>${html}</body></html>`;
       }
       this.logger.debug("Launching Puppeteer browser...");
       browser = await puppeteer.launch({
-        headless: "new",
+        headless: true,
         channel: "chrome",
         executablePath: process.env.CHROME_PATH || undefined,
         args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-web-security",
           "--disable-features=IsolateOrigins",
           "--disable-site-isolation-trials",
+          "--autoplay-policy=user-gesture-required",
+          "--disable-background-networking",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-breakpad",
+          "--disable-client-side-phishing-detection",
+          "--disable-component-update",
+          "--disable-default-apps",
           "--disable-dev-shm-usage",
-          "--no-zygote",
-          "--single-process",
-          "--disable-gpu",
-          "--window-size=1920,1080",
+          "--disable-domain-reliability",
+          "--disable-extensions",
+          "--disable-features=AudioServiceOutOfProcess",
+          "--disable-hang-monitor",
+          "--disable-ipc-flooding-protection",
+          "--disable-notifications",
+          "--disable-offer-store-unmasked-wallet-cards",
+          "--disable-popup-blocking",
+          "--disable-print-preview",
+          "--disable-prompt-on-repost",
+          "--disable-renderer-backgrounding",
+          "--disable-setuid-sandbox",
+          "--disable-speech-api",
+          "--disable-sync",
           "--hide-scrollbars",
-          "--disable-blink-features=AutomationControlled",
+          "--ignore-gpu-blacklist",
+          "--metrics-recording-only",
+          "--mute-audio",
+          "--no-default-browser-check",
+          "--no-first-run",
+          "--no-pings",
+          "--no-sandbox",
+          "--no-zygote",
+          "--password-store=basic",
+          "--use-gl=swiftshader",
+          "--use-mock-keychain",
         ],
-        ignoreHTTPSErrors: true,
         defaultViewport: {
           width: 1920,
           height: 1080,
@@ -101,6 +125,7 @@ export class PdfService {
 
       this.logger.debug("Browser launched successfully");
       const page = await browser.newPage();
+      await page.setBypassCSP(true);
 
       // Set common browser configurations
       try {
@@ -137,6 +162,11 @@ export class PdfService {
         waitUntil: "networkidle0",
       });
 
+      // Header and footer will be added by Puppeteer's built-in functionality during PDF generation
+      this.logger.debug(
+        "Content loaded, ready for PDF generation with headers and footers"
+      );
+
       // Wait for any remaining dynamic content
       await page
         .waitForFunction(
@@ -157,6 +187,21 @@ export class PdfService {
 
       // Generate PDF with retry
       this.logger.debug("Starting PDF generation");
+
+      // Get company name and generate header/footer templates
+      const companyName = this.configService.pdfWatermarkText;
+      const color = this.configService.pdfWatermarkColor;
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
       const pdf = await this.retryOperation(
         async () => {
           try {
@@ -165,11 +210,24 @@ export class PdfService {
               printBackground: true,
               timeout: this.timeouts.pdfGeneration,
               scale: 0.8,
+              displayHeaderFooter: true,
+              headerTemplate: `
+                <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
+                  <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
+                </div>
+              `,
+              footerTemplate: `
+                <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
+                  <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
+                </div>
+              `,
               margin: {
-                top: "20px",
-                right: "20px",
-                bottom: "20px",
-                left: "20px",
+                top: "80px",
+                right: "40px",
+                bottom: "80px",
+                left: "40px",
               },
             });
             this.logger.debug("PDF generation successful");
@@ -188,7 +246,7 @@ export class PdfService {
         500
       );
 
-      return pdf;
+      return Buffer.from(pdf);
     } catch (error: unknown) {
       let errorMessage: string;
       if (error instanceof Error) {
@@ -212,9 +270,43 @@ export class PdfService {
           executablePath: process.env.CHROME_PATH || "default",
           channel: "chrome",
           args: [
-            "--no-sandbox",
+            "--disable-features=IsolateOrigins",
+            "--disable-site-isolation-trials",
+            "--autoplay-policy=user-gesture-required",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--disable-dev-shm-usage",
+            "--disable-domain-reliability",
+            "--disable-extensions",
+            "--disable-features=AudioServiceOutOfProcess",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-notifications",
+            "--disable-offer-store-unmasked-wallet-cards",
+            "--disable-popup-blocking",
+            "--disable-print-preview",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
             "--disable-setuid-sandbox",
-            // ... other args for brevity
+            "--disable-speech-api",
+            "--disable-sync",
+            "--hide-scrollbars",
+            "--ignore-gpu-blacklist",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-default-browser-check",
+            "--no-first-run",
+            "--no-pings",
+            "--no-sandbox",
+            "--no-zygote",
+            "--password-store=basic",
+            "--use-gl=swiftshader",
+            "--use-mock-keychain",
           ],
         },
       });
@@ -309,27 +401,48 @@ export class PdfService {
       try {
         this.logger.debug("Launching Puppeteer browser...");
         browser = await puppeteer.launch({
-          headless: "new",
+          headless: true,
           channel: "chrome",
           executablePath: process.env.CHROME_PATH || undefined,
           args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-web-security",
             "--disable-features=IsolateOrigins",
             "--disable-site-isolation-trials",
+            "--autoplay-policy=user-gesture-required",
+            "--disable-background-networking",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-update",
+            "--disable-default-apps",
             "--disable-dev-shm-usage",
-            "--no-zygote",
-            "--single-process",
-            "--disable-gpu",
-            "--window-size=1920,1080",
+            "--disable-domain-reliability",
+            "--disable-extensions",
+            "--disable-features=AudioServiceOutOfProcess",
+            "--disable-hang-monitor",
+            "--disable-ipc-flooding-protection",
+            "--disable-notifications",
+            "--disable-offer-store-unmasked-wallet-cards",
+            "--disable-popup-blocking",
+            "--disable-print-preview",
+            "--disable-prompt-on-repost",
+            "--disable-renderer-backgrounding",
+            "--disable-setuid-sandbox",
+            "--disable-speech-api",
+            "--disable-sync",
             "--hide-scrollbars",
-            "--disable-blink-features=AutomationControlled",
-            "--allow-running-insecure-content",
-            "--disable-web-security",
-            "--disable-features=site-per-process",
+            "--ignore-gpu-blacklist",
+            "--metrics-recording-only",
+            "--mute-audio",
+            "--no-default-browser-check",
+            "--no-first-run",
+            "--no-pings",
+            "--no-sandbox",
+            "--no-zygote",
+            "--password-store=basic",
+            "--use-gl=swiftshader",
+            "--use-mock-keychain",
           ],
-          ignoreHTTPSErrors: true,
           defaultViewport: {
             width: 1920,
             height: 1080,
@@ -338,6 +451,7 @@ export class PdfService {
 
         this.logger.debug("Browser launched successfully");
         const page = await browser.newPage();
+        await page.setBypassCSP(true);
 
         // Set common browser configurations
         try {
@@ -549,8 +663,28 @@ export class PdfService {
           new Promise((resolve) => setTimeout(resolve, 2000)), // Additional wait for dynamic content
         ]);
 
+        // Header and footer will be added by Puppeteer's built-in functionality during PDF generation
+        this.logger.debug(
+          "Page loaded, ready for PDF generation with headers and footers"
+        );
+
         // Generate PDF with retry
         this.logger.debug("Starting PDF generation");
+
+        // Get company name and generate header/footer templates
+        const companyName = this.configService.pdfWatermarkText;
+        const color = this.configService.pdfWatermarkColor;
+        const now = new Date();
+        const dateStr = now.toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        });
+        const timeStr = now.toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
         const pdf = await this.retryOperation(
           async () => {
             try {
@@ -559,11 +693,24 @@ export class PdfService {
                 printBackground: true,
                 timeout: this.timeouts.pdfGeneration,
                 scale: 0.8, // Slightly scale down to ensure content fits
+                displayHeaderFooter: true,
+                headerTemplate: `
+                  <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                    <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
+                    <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
+                  </div>
+                `,
+                footerTemplate: `
+                  <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                    <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
+                    <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
+                  </div>
+                `,
                 margin: {
-                  top: "20px",
-                  right: "20px",
-                  bottom: "20px",
-                  left: "20px",
+                  top: "80px",
+                  right: "40px",
+                  bottom: "80px",
+                  left: "40px",
                 },
               });
               this.logger.debug("PDF generation successful");
@@ -583,7 +730,7 @@ export class PdfService {
           500
         );
 
-        return pdf;
+        return Buffer.from(pdf);
       } catch (error: unknown) {
         let errorMessage: string;
         if (error instanceof Error) {
@@ -607,9 +754,43 @@ export class PdfService {
             executablePath: process.env.CHROME_PATH || "default",
             channel: "chrome",
             args: [
-              "--no-sandbox",
+              "--disable-features=IsolateOrigins",
+              "--disable-site-isolation-trials",
+              "--autoplay-policy=user-gesture-required",
+              "--disable-background-networking",
+              "--disable-background-timer-throttling",
+              "--disable-backgrounding-occluded-windows",
+              "--disable-breakpad",
+              "--disable-client-side-phishing-detection",
+              "--disable-component-update",
+              "--disable-default-apps",
+              "--disable-dev-shm-usage",
+              "--disable-domain-reliability",
+              "--disable-extensions",
+              "--disable-features=AudioServiceOutOfProcess",
+              "--disable-hang-monitor",
+              "--disable-ipc-flooding-protection",
+              "--disable-notifications",
+              "--disable-offer-store-unmasked-wallet-cards",
+              "--disable-popup-blocking",
+              "--disable-print-preview",
+              "--disable-prompt-on-repost",
+              "--disable-renderer-backgrounding",
               "--disable-setuid-sandbox",
-              // ... other args for brevity
+              "--disable-speech-api",
+              "--disable-sync",
+              "--hide-scrollbars",
+              "--ignore-gpu-blacklist",
+              "--metrics-recording-only",
+              "--mute-audio",
+              "--no-default-browser-check",
+              "--no-first-run",
+              "--no-pings",
+              "--no-sandbox",
+              "--no-zygote",
+              "--password-store=basic",
+              "--use-gl=swiftshader",
+              "--use-mock-keychain",
             ],
           },
         });
