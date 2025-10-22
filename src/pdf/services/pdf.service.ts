@@ -50,23 +50,8 @@ export class PdfService {
         waitUntil: "networkidle0",
       });
 
-      // Wait for any remaining dynamic content
-      await page
-        .waitForFunction(
-          () => {
-            const readyState = document.readyState;
-            const loadingElements = document.querySelectorAll(
-              "img[loading], iframe[loading]"
-            );
-            return readyState === "complete" && loadingElements.length === 0;
-          },
-          { timeout: this.timeouts.dynamicContent }
-        )
-        .catch((error: unknown) => {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          this.logger.warn(`Dynamic content wait timed out: ${errorMessage}`);
-        });
+      // Use smart waiting instead of fixed timeouts
+      await this.browserPoolService.waitForPageLoad(page);
 
       // Generate PDF with retry
       this.logger.debug("Starting PDF generation");
@@ -271,28 +256,9 @@ export class PdfService {
               contentType: response.headers()["content-type"],
             });
 
-            // Wait for any remaining dynamic content
+            // Use smart waiting for dynamic content
             if (page) {
-              await page
-                .waitForFunction(
-                  () => {
-                    const readyState = document.readyState;
-                    const loadingElements = document.querySelectorAll(
-                      "img[loading], iframe[loading]"
-                    );
-                    return (
-                      readyState === "complete" && loadingElements.length === 0
-                    );
-                  },
-                  { timeout: this.timeouts.dynamicContent }
-                )
-                .catch((error: unknown) => {
-                  this.logger.warn(
-                    `Dynamic content wait timed out: ${
-                      error instanceof Error ? error.message : String(error)
-                    }`
-                  );
-                });
+              await this.browserPoolService.waitForPageLoad(page, url);
             }
 
             return response;
@@ -316,21 +282,9 @@ export class PdfService {
         1000
       );
 
-      // Wait for network to be idle and any remaining dynamic content
+      // Additional smart waiting for network stability
       if (page) {
-        await Promise.all([
-          page
-            .waitForNetworkIdle({
-              idleTime: 1000,
-              timeout: this.timeouts.networkIdle,
-            })
-            .catch((error: unknown) => {
-              const errorMessage =
-                error instanceof Error ? error.message : String(error);
-              this.logger.warn(`Network idle wait failed: ${errorMessage}`);
-            }),
-          new Promise((resolve) => setTimeout(resolve, 2000)), // Additional wait for dynamic content
-        ]);
+        await this.browserPoolService.waitForPageLoad(page, url);
       }
 
       // Generate PDF with retry
