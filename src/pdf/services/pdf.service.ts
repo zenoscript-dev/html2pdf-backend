@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import * as puppeteer from "puppeteer";
+import { Page } from "puppeteer";
 import { ConfigService } from "../../config";
 import { PrometheusService } from "../../health";
 import { PdfError } from "../errors/pdf.error";
+import { BrowserPoolService } from "./browser-pool.service";
 
 @Injectable()
 export class PdfService {
@@ -18,12 +19,13 @@ export class PdfService {
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly prometheusService: PrometheusService
+    private readonly prometheusService: PrometheusService,
+    private readonly browserPoolService: BrowserPoolService
   ) {}
 
   async convertHtmlToPdf(html: string): Promise<Buffer> {
     const timer = this.prometheusService.startConversion("html");
-    let browser;
+    let page: Page | undefined;
 
     try {
       // Validate HTML string
@@ -38,62 +40,8 @@ export class PdfService {
       //   throw new BadRequestException("HTML content must include <html> tags");
       // }
 
-      this.logger.debug("Launching Puppeteer browser...");
-      browser = await puppeteer.launch({
-        headless: true,
-        channel: "chrome",
-        executablePath: process.env.CHROME_PATH || undefined,
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-web-security",
-          "--disable-features=IsolateOrigins",
-          "--disable-site-isolation-trials",
-          "--disable-dev-shm-usage",
-          "--no-zygote",
-          "--single-process",
-          "--disable-gpu",
-          "--window-size=1920,1080",
-          "--hide-scrollbars",
-          "--disable-blink-features=AutomationControlled",
-        ],
-        defaultViewport: {
-          width: 1920,
-          height: 1080,
-        },
-      });
-
-      this.logger.debug("Browser launched successfully");
-      const page = await browser.newPage();
-      await page.setBypassCSP(true);
-
-      // Set common browser configurations
-      try {
-        await page.setUserAgent(
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-        );
-        await page.setExtraHTTPHeaders({
-          "Accept-Language": "en-US,en;q=0.9",
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-          "Accept-Encoding": "gzip, deflate, br",
-          Connection: "keep-alive",
-        });
-        await page.setJavaScriptEnabled(true);
-        await page.setViewport({
-          width: 1920,
-          height: 1080,
-          deviceScaleFactor: 1,
-        });
-      } catch (configError: unknown) {
-        throw new Error(
-          `Failed to configure browser: ${
-            configError instanceof Error
-              ? configError.message
-              : String(configError)
-          }`
-        );
-      }
+      this.logger.debug("Getting page from browser pool...");
+      page = await this.browserPoolService.getPage();
 
       // Set content with timeout and wait for network idle
       this.logger.debug("Setting HTML content...");
@@ -140,6 +88,9 @@ export class PdfService {
       const pdf = await this.retryOperation(
         async () => {
           try {
+            if (!page) {
+              throw new Error("Page is not available");
+            }
             const result = await page.pdf({
               format: "A4",
               printBackground: true,
@@ -201,15 +152,6 @@ export class PdfService {
         message: "Failed to convert HTML to PDF",
         error: errorMessage,
         errorObject: error,
-        puppeteerConfig: {
-          executablePath: process.env.CHROME_PATH || "default",
-          channel: "chrome",
-          args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            // ... other args for brevity
-          ],
-        },
       });
 
       if (error instanceof BadRequestException) {
@@ -239,16 +181,8 @@ export class PdfService {
         `Failed to convert HTML to PDF: ${errorMessage}`
       );
     } finally {
-      if (browser) {
-        await browser.close().catch((error: unknown) => {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-          this.logger.error({
-            message: "Error closing browser",
-            error: errorMessage,
-            errorObject: error,
-          });
-        });
+      if (page) {
+        await this.browserPoolService.closePage(page);
       }
       this.prometheusService.endConversion(timer, "success");
     }
@@ -286,7 +220,8 @@ export class PdfService {
 
   async convertUrlToPdf(url: string): Promise<Buffer> {
     const timer = this.prometheusService.startConversion("url");
-    let browser;
+    let page: Page | undefined;
+
     try {
       // Validate URL format
       try {
@@ -296,192 +231,48 @@ export class PdfService {
         throw new BadRequestException("Invalid URL format");
       }
 
-      try {
-        this.logger.debug("Launching Puppeteer browser...");
-        browser = await puppeteer.launch({
-          headless: true,
-          channel: "chrome",
-          executablePath: process.env.CHROME_PATH || undefined,
-          args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-web-security",
-            "--disable-features=IsolateOrigins",
-            "--disable-site-isolation-trials",
-            "--disable-dev-shm-usage",
-            "--no-zygote",
-            "--single-process",
-            "--disable-gpu",
-            "--window-size=1920,1080",
-            "--hide-scrollbars",
-            "--disable-blink-features=AutomationControlled",
-            "--allow-running-insecure-content",
-            "--disable-web-security",
-            "--disable-features=site-per-process",
-          ],
-          defaultViewport: {
-            width: 1920,
-            height: 1080,
-          },
-        });
-
-        this.logger.debug("Browser launched successfully");
-        const page = await browser.newPage();
-        await page.setBypassCSP(true);
-
-        // Set common browser configurations
-        try {
-          await page.setUserAgent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
-          );
-          await page.setExtraHTTPHeaders({
-            "Accept-Language": "en-US,en;q=0.9",
-            Accept:
-              "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            Connection: "keep-alive",
-          });
-          await page.setJavaScriptEnabled(true);
-          await page.setViewport({
-            width: 1920,
-            height: 1080,
-            deviceScaleFactor: 1,
-          });
-        } catch (configError: unknown) {
-          throw new Error(
-            `Failed to configure browser: ${
-              configError instanceof Error
-                ? configError.message
-                : String(configError)
-            }`
-          );
-        }
-
-        // Enhanced stealth configuration
-        await page.evaluateOnNewDocument(() => {
-          // Add common browser properties
-          Object.defineProperty(navigator, "webdriver", {
-            get: () => undefined,
-          });
-          Object.defineProperty(navigator, "languages", {
-            get: () => ["en-US", "en"],
-          });
-          Object.defineProperty(navigator, "plugins", {
-            get: () => [
-              {
-                description: "Portable Document Format",
-                filename: "internal-pdf-viewer",
-                name: "Chrome PDF Plugin",
-                mimeTypes: [{ type: "application/pdf" }],
-              },
-              {
-                description: "Portable Document Format",
-                filename: "internal-pdf-viewer",
-                name: "Chrome PDF Viewer",
-                mimeTypes: [{ type: "application/pdf" }],
-              },
-              {
-                description: "Native Client",
-                filename: "internal-nacl-plugin",
-                name: "Native Client",
-                mimeTypes: [{ type: "application/x-nacl" }],
-              },
-            ],
-          });
-          Object.defineProperty(navigator, "vendor", {
-            get: () => "Google Inc.",
-          });
-          Object.defineProperty(navigator, "platform", { get: () => "Win32" });
-          Object.defineProperty(window, "chrome", { get: () => ({}) });
-          Object.defineProperty(window, "outerdimensions", {
-            get: () => undefined,
-          });
-        });
-
-        // Enable request interception
-        await page.setRequestInterception(true);
-
-        // Handle request interception and logging
-        page.on("request", (request) => {
-          const resourceType = request.resourceType();
-          const requestUrl = request.url();
-
-          this.logger.debug({
-            message: "Network request",
-            url: requestUrl,
-            method: request.method(),
-            resourceType,
-            headers: request.headers(),
-          });
-
-          // Only block media and font resources to keep page loading fast
-          if (["media", "font"].includes(resourceType)) {
-            request.abort();
-          } else {
-            request.continue();
-          }
-        });
-
-        // Log responses for debugging
-        page.on("response", (response) => {
-          const request = response.request();
-          const status = response.status();
-
-          if (status >= 400) {
-            this.logger.warn({
-              message: "Failed network request",
-              url: request.url(),
-              method: request.method(),
-              status,
-              statusText: response.statusText(),
+      this.logger.debug("Getting page from browser pool...");
+      page = await this.browserPoolService.getPage();
+      // Navigate to URL with retry
+      this.logger.debug(`Attempting to navigate to URL: ${url}`);
+      await this.retryOperation(
+        async () => {
+          try {
+            if (!page) {
+              throw new Error("Page is not available");
+            }
+            const response = await page.goto(url, {
+              timeout: this.timeouts.navigation,
+              waitUntil: ["networkidle0", "domcontentloaded"],
             });
-          } else {
+
+            if (!response) {
+              throw new Error("Navigation failed: No response received");
+            }
+
+            const status = response.status();
+            if (status < 200 || status >= 400) {
+              throw new PdfError(
+                `Navigation failed: HTTP ${status} - ${response.statusText()}`,
+                {
+                  stage: "navigation",
+                  url,
+                  httpStatus: status,
+                  httpStatusText: response.statusText(),
+                  contentType: response.headers()["content-type"],
+                }
+              );
+            }
+
             this.logger.debug({
-              message: "Network response",
-              url: request.url(),
-              method: request.method(),
+              message: "Navigation successful",
+              url,
               status,
               contentType: response.headers()["content-type"],
             });
-          }
-        });
 
-        // Navigate to URL with retry
-        this.logger.debug(`Attempting to navigate to URL: ${url}`);
-        await this.retryOperation(
-          async () => {
-            try {
-              const response = await page.goto(url, {
-                timeout: this.timeouts.navigation,
-                waitUntil: ["networkidle0", "domcontentloaded"],
-              });
-
-              if (!response) {
-                throw new Error("Navigation failed: No response received");
-              }
-
-              const status = response.status();
-              if (status < 200 || status >= 400) {
-                throw new PdfError(
-                  `Navigation failed: HTTP ${status} - ${response.statusText()}`,
-                  {
-                    stage: "navigation",
-                    url,
-                    httpStatus: status,
-                    httpStatusText: response.statusText(),
-                    contentType: response.headers()["content-type"],
-                  }
-                );
-              }
-
-              this.logger.debug({
-                message: "Navigation successful",
-                url,
-                status,
-                contentType: response.headers()["content-type"],
-              });
-
-              // Wait for any remaining dynamic content
+            // Wait for any remaining dynamic content
+            if (page) {
               await page
                 .waitForFunction(
                   () => {
@@ -502,29 +293,31 @@ export class PdfService {
                     }`
                   );
                 });
-
-              return response;
-            } catch (navError: unknown) {
-              const errorMessage =
-                navError instanceof Error ? navError.message : String(navError);
-              this.logger.error({
-                message: "Navigation failed",
-                url,
-                error: errorMessage,
-                errorObject: navError,
-              });
-              throw new PdfError(`Navigation failed: ${errorMessage}`, {
-                stage: "navigation",
-                url,
-                cause: navError,
-              });
             }
-          },
-          3,
-          1000
-        );
 
-        // Wait for network to be idle and any remaining dynamic content
+            return response;
+          } catch (navError: unknown) {
+            const errorMessage =
+              navError instanceof Error ? navError.message : String(navError);
+            this.logger.error({
+              message: "Navigation failed",
+              url,
+              error: errorMessage,
+              errorObject: navError,
+            });
+            throw new PdfError(`Navigation failed: ${errorMessage}`, {
+              stage: "navigation",
+              url,
+              cause: navError,
+            });
+          }
+        },
+        3,
+        1000
+      );
+
+      // Wait for network to be idle and any remaining dynamic content
+      if (page) {
         await Promise.all([
           page
             .waitForNetworkIdle({
@@ -538,121 +331,74 @@ export class PdfService {
             }),
           new Promise((resolve) => setTimeout(resolve, 2000)), // Additional wait for dynamic content
         ]);
-
-        // Generate PDF with retry
-        this.logger.debug("Starting PDF generation");
-
-        // Get company name and generate header/footer templates
-        const companyName = this.configService.pdfWatermarkText;
-        const color = this.configService.pdfWatermarkColor;
-        const now = new Date();
-        const dateStr = now.toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        });
-        const timeStr = now.toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-
-        const pdf = await this.retryOperation(
-          async () => {
-            try {
-              const result = await page.pdf({
-                format: "A4",
-                printBackground: true,
-                timeout: this.timeouts.pdfGeneration,
-                scale: 0.8, // Slightly scale down to ensure content fits
-                displayHeaderFooter: true,
-                headerTemplate: `
-                  <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
-                    <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
-                    <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
-                  </div>
-                `,
-                footerTemplate: `
-                  <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
-                    <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
-                    <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
-                  </div>
-                `,
-                margin: {
-                  top: "80px",
-                  right: "40px",
-                  bottom: "80px",
-                  left: "40px",
-                },
-              });
-              this.logger.debug("PDF generation successful");
-              return result;
-            } catch (pdfError: unknown) {
-              const errorMessage =
-                pdfError instanceof Error ? pdfError.message : String(pdfError);
-              this.logger.debug(`PDF generation failed: ${errorMessage}`);
-              throw new PdfError(`PDF generation failed: ${errorMessage}`, {
-                stage: "pdf_generation",
-                url,
-                cause: pdfError,
-              });
-            }
-          },
-          2,
-          500
-        );
-
-        return Buffer.from(pdf);
-      } catch (error: unknown) {
-        let errorMessage: string;
-        if (error instanceof Error) {
-          errorMessage = error.message;
-        } else if (typeof error === "object" && error !== null) {
-          try {
-            errorMessage = JSON.stringify(error);
-          } catch {
-            errorMessage = Object.prototype.toString.call(error);
-          }
-        } else {
-          errorMessage = String(error);
-        }
-
-        // Log detailed error information
-        this.logger.error({
-          message: "Navigation or PDF generation failed",
-          error: errorMessage,
-          errorObject: error,
-          puppeteerConfig: {
-            executablePath: process.env.CHROME_PATH || "default",
-            channel: "chrome",
-            args: [
-              "--no-sandbox",
-              "--disable-setuid-sandbox",
-              // ... other args for brevity
-            ],
-          },
-        });
-
-        throw new PdfError(
-          `Failed to navigate or generate PDF: ${errorMessage}`,
-          {
-            stage: "process",
-            url,
-            cause: error,
-          }
-        );
-      } finally {
-        if (browser) {
-          await browser.close().catch((error: unknown) => {
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            this.logger.error({
-              message: "Error closing browser",
-              error: errorMessage,
-              errorObject: error,
-            });
-          });
-        }
       }
+
+      // Generate PDF with retry
+      this.logger.debug("Starting PDF generation");
+
+      // Get company name and generate header/footer templates
+      const companyName = this.configService.pdfWatermarkText;
+      const color = this.configService.pdfWatermarkColor;
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      const timeStr = now.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      const pdf = await this.retryOperation(
+        async () => {
+          try {
+            if (!page) {
+              throw new Error("Page is not available");
+            }
+            const result = await page.pdf({
+              format: "A4",
+              printBackground: true,
+              timeout: this.timeouts.pdfGeneration,
+              scale: 0.8, // Slightly scale down to ensure content fits
+              displayHeaderFooter: true,
+              headerTemplate: `
+                <div style="width: 100%; font-size: 10px; padding: 5px 20px; color: ${color}; border-bottom: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-weight: bold; font-size: 12px;">${companyName}</span>
+                  <span style="text-align: right;">${dateStr}<br/>${timeStr}</span>
+                </div>
+              `,
+              footerTemplate: `
+                <div style="width: 100%; font-size: 9px; padding: 5px 20px; color: ${color}; border-top: 2px solid ${color}; display: flex; justify-content: space-between; align-items: center; background: white; -webkit-print-color-adjust: exact;">
+                  <span style="font-style: italic;">© ${companyName} - All Rights Reserved</span>
+                  <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span> | Generated on ${dateStr} at ${timeStr}</span>
+                </div>
+              `,
+              margin: {
+                top: "80px",
+                right: "40px",
+                bottom: "80px",
+                left: "40px",
+              },
+            });
+            this.logger.debug("PDF generation successful");
+            return result;
+          } catch (pdfError: unknown) {
+            const errorMessage =
+              pdfError instanceof Error ? pdfError.message : String(pdfError);
+            this.logger.debug(`PDF generation failed: ${errorMessage}`);
+            throw new PdfError(`PDF generation failed: ${errorMessage}`, {
+              stage: "pdf_generation",
+              url,
+              cause: pdfError,
+            });
+          }
+        },
+        2,
+        500
+      );
+
+      return Buffer.from(pdf);
     } catch (error: unknown) {
       // Enhanced error handling
       let errorMessage: string;
@@ -698,10 +444,14 @@ export class PdfService {
         );
       }
 
+      this.prometheusService.recordError("url", errorMessage);
       throw new BadRequestException(
         `Failed to convert URL to PDF: ${errorMessage}`
       );
     } finally {
+      if (page) {
+        await this.browserPoolService.closePage(page);
+      }
       this.prometheusService.endConversion(timer, "success");
     }
   }
