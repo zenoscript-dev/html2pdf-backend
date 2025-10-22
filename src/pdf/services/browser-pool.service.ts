@@ -261,11 +261,45 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     }
 
     const pageItem = this.pagePool[availablePageIndex];
+    
+    // Validate page before returning it
+    if (!this.isPageValid(pageItem.page)) {
+      this.logger.warn(`Page ${pageItem.id} is invalid, removing from pool`);
+      this.removePageFromPool(pageItem);
+      return null;
+    }
+    
     pageItem.isLocked = true;
     pageItem.lastUsed = now;
 
     this.logger.debug(`Retrieved page from pool (ID: ${pageItem.id})`);
     return pageItem.page;
+  }
+
+  private isPageValid(page: Page): boolean {
+    try {
+      // Check if page is closed
+      if (page.isClosed()) {
+        return false;
+      }
+
+      // Check if the browser is still connected
+      const browser = page.browser();
+      if (!browser || !browser.isConnected()) {
+        return false;
+      }
+
+      // Try to access the page's main frame
+      const mainFrame = page.mainFrame();
+      if (!mainFrame || mainFrame.isDetached()) {
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.debug(`Page validation failed: ${error}`);
+      return false;
+    }
   }
 
   private async createNewPage(): Promise<Page> {
@@ -492,6 +526,13 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
   private async returnPageToPool(pageItem: PagePoolItem): Promise<void> {
     try {
+      // Validate page before returning to pool
+      if (!this.isPageValid(pageItem.page)) {
+        this.logger.warn(`Page ${pageItem.id} is invalid, removing from pool instead of returning`);
+        await this.removePageFromPool(pageItem);
+        return;
+      }
+
       // Clear the page content and reset it for reuse
       await this.resetPageForReuse(pageItem.page);
 
@@ -511,8 +552,16 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
   private async resetPageForReuse(page: Page): Promise<void> {
     try {
+      // Validate page before attempting to reset
+      if (!this.isPageValid(page)) {
+        throw new Error("Page is invalid or detached");
+      }
+
       // Clear any existing content
-      await page.goto("about:blank");
+      await page.goto("about:blank", { 
+        timeout: 5000,
+        waitUntil: "domcontentloaded" 
+      });
 
       // Clear any cookies or local storage
       await page.evaluate(() => {
@@ -555,7 +604,14 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (!pageItem.page.isClosed()) {
-        await pageItem.page.close();
+        // Try to close the page gracefully
+        await Promise.race([
+          pageItem.page.close(),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Page close timeout')), 3000)
+          )
+        ]);
+        
         // Update browser instance page count
         for (const browserInstance of this.browsers) {
           if (browserInstance.browser.isConnected()) {
@@ -568,7 +624,8 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         }
       }
     } catch (error) {
-      this.logger.error(`Error closing page during pool removal: ${error}`);
+      // Log error but don't throw - page might already be closed
+      this.logger.debug(`Error closing page during pool removal: ${error}`);
     }
 
     this.logger.debug(
@@ -805,27 +862,28 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     const pagesToRemove: PagePoolItem[] = [];
 
-    // Find pages that are too old or have been idle too long
+    // Find pages that are too old, have been idle too long, or are invalid
     for (const pageItem of this.pagePool) {
       const age = now - pageItem.createdAt;
       const idleTime = now - pageItem.lastUsed;
 
       if (
         age > this.maxPageAge ||
-        (idleTime > this.maxPageAge && !pageItem.isLocked)
+        (idleTime > this.maxPageAge && !pageItem.isLocked) ||
+        !this.isPageValid(pageItem.page)
       ) {
         pagesToRemove.push(pageItem);
       }
     }
 
-    // Remove old pages
+    // Remove old/invalid pages
     for (const pageItem of pagesToRemove) {
       await this.removePageFromPool(pageItem);
     }
 
     if (pagesToRemove.length > 0) {
       this.logger.debug(
-        `Cleaned up ${pagesToRemove.length} old pages from pool`
+        `Cleaned up ${pagesToRemove.length} old/invalid pages from pool`
       );
     }
   }
