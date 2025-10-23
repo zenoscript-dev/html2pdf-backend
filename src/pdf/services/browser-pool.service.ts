@@ -261,14 +261,14 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     }
 
     const pageItem = this.pagePool[availablePageIndex];
-    
+
     // Validate page before returning it
     if (!this.isPageValid(pageItem.page)) {
       this.logger.warn(`Page ${pageItem.id} is invalid, removing from pool`);
       this.removePageFromPool(pageItem);
       return null;
     }
-    
+
     pageItem.isLocked = true;
     pageItem.lastUsed = now;
 
@@ -528,7 +528,9 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
     try {
       // Validate page before returning to pool
       if (!this.isPageValid(pageItem.page)) {
-        this.logger.warn(`Page ${pageItem.id} is invalid, removing from pool instead of returning`);
+        this.logger.warn(
+          `Page ${pageItem.id} is invalid, removing from pool instead of returning`
+        );
         await this.removePageFromPool(pageItem);
         return;
       }
@@ -558,9 +560,9 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Clear any existing content
-      await page.goto("about:blank", { 
+      await page.goto("about:blank", {
         timeout: 5000,
-        waitUntil: "domcontentloaded" 
+        waitUntil: "domcontentloaded",
       });
 
       // Clear any cookies or local storage
@@ -607,11 +609,11 @@ export class BrowserPoolService implements OnModuleInit, OnModuleDestroy {
         // Try to close the page gracefully
         await Promise.race([
           pageItem.page.close(),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Page close timeout')), 3000)
-          )
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Page close timeout")), 3000)
+          ),
         ]);
-        
+
         // Update browser instance page count
         for (const browserInstance of this.browsers) {
           if (browserInstance.browser.isConnected()) {

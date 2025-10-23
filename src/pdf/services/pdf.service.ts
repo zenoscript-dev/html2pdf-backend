@@ -52,8 +52,10 @@ export class PdfService {
         });
       } catch (error) {
         // Check if it's a detached frame error
-        if (error instanceof Error && error.message.includes('detached')) {
-          this.logger.warn("Page became detached during content setting, creating new page");
+        if (error instanceof Error && error.message.includes("detached")) {
+          this.logger.warn(
+            "Page became detached during content setting, creating new page"
+          );
           // Close the invalid page and get a new one
           await this.browserPoolService.closePage(page);
           page = await this.browserPoolService.getPage();
@@ -236,83 +238,88 @@ export class PdfService {
       page = await this.browserPoolService.getPage();
       // Navigate to URL with retry
       this.logger.debug(`Attempting to navigate to URL: ${url}`);
-        await this.retryOperation(
-          async () => {
-            try {
-              if (!page) {
-                throw new Error("Page is not available");
+      await this.retryOperation(
+        async () => {
+          try {
+            if (!page) {
+              throw new Error("Page is not available");
+            }
+            const response = await page.goto(url, {
+              timeout: this.timeouts.navigation,
+              waitUntil: ["networkidle0", "domcontentloaded"],
+            });
+
+            if (!response) {
+              throw new Error("Navigation failed: No response received");
+            }
+
+            const status = response.status();
+            if (status < 200 || status >= 400) {
+              throw new PdfError(
+                `Navigation failed: HTTP ${status} - ${response.statusText()}`,
+                {
+                  stage: "navigation",
+                  url,
+                  httpStatus: status,
+                  httpStatusText: response.statusText(),
+                  contentType: response.headers()["content-type"],
+                }
+              );
+            }
+
+            this.logger.debug({
+              message: "Navigation successful",
+              url,
+              status,
+              contentType: response.headers()["content-type"],
+            });
+
+            // Use smart waiting for dynamic content
+            if (page) {
+              await this.browserPoolService.waitForPageLoad(page, url);
+            }
+
+            return response;
+          } catch (navError: unknown) {
+            // Check if it's a detached frame error
+            if (
+              navError instanceof Error &&
+              navError.message.includes("detached")
+            ) {
+              this.logger.warn(
+                "Page became detached during navigation, creating new page"
+              );
+              // Close the invalid page and get a new one
+              if (page) {
+                await this.browserPoolService.closePage(page);
               }
+              page = await this.browserPoolService.getPage();
+              // Retry navigation with new page
               const response = await page.goto(url, {
                 timeout: this.timeouts.navigation,
                 waitUntil: ["networkidle0", "domcontentloaded"],
               });
-
-              if (!response) {
-                throw new Error("Navigation failed: No response received");
-              }
-
-              const status = response.status();
-              if (status < 200 || status >= 400) {
-                throw new PdfError(
-                  `Navigation failed: HTTP ${status} - ${response.statusText()}`,
-                  {
-                    stage: "navigation",
-                    url,
-                    httpStatus: status,
-                    httpStatusText: response.statusText(),
-                    contentType: response.headers()["content-type"],
-                  }
-                );
-              }
-
-              this.logger.debug({
-                message: "Navigation successful",
-                url,
-                status,
-                contentType: response.headers()["content-type"],
-              });
-
-              // Use smart waiting for dynamic content
-              if (page) {
-                await this.browserPoolService.waitForPageLoad(page, url);
-              }
-
               return response;
-            } catch (navError: unknown) {
-              // Check if it's a detached frame error
-              if (navError instanceof Error && navError.message.includes('detached')) {
-                this.logger.warn("Page became detached during navigation, creating new page");
-                // Close the invalid page and get a new one
-                if (page) {
-                  await this.browserPoolService.closePage(page);
-                }
-                page = await this.browserPoolService.getPage();
-                // Retry navigation with new page
-                const response = await page.goto(url, {
-                  timeout: this.timeouts.navigation,
-                  waitUntil: ["networkidle0", "domcontentloaded"],
-                });
-                return response;
-              }
-              
-              const errorMessage =
-                navError instanceof Error ? navError.message : String(navError);
-              this.logger.error({
-                message: "Navigation failed",
-                url,
-                error: errorMessage,
-                errorObject: navError,
-              });
-              throw new PdfError(`Navigation failed: ${errorMessage}`, {
-                stage: "navigation",
-                url,
-                cause: navError,
-              });
             }
-          },
-          3,
-          1000
-        );
+
+            const errorMessage =
+              navError instanceof Error ? navError.message : String(navError);
+            this.logger.error({
+              message: "Navigation failed",
+              url,
+              error: errorMessage,
+              errorObject: navError,
+            });
+            throw new PdfError(`Navigation failed: ${errorMessage}`, {
+              stage: "navigation",
+              url,
+              cause: navError,
+            });
+          }
+        },
+        3,
+        1000
+      );
 
       // Additional smart waiting for network stability
       if (page) {
